@@ -18,7 +18,7 @@ class NormalRFF(TransformerMixin): #随机傅里叶特征逼近RBF核函数
         return self
 
     def transform(self, X: np.ndarray):
-        return np.sqrt(2 / self.D) * np.cos(np.matmul(X, self.w.T) + self.b)
+        return np.sqrt(2 / self.D) * np.cos(X @ self.w.T + self.b)
 
     def fit_transform(self, X: np.ndarray):
         return self.fit(X).transform(X)
