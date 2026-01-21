@@ -141,88 +141,70 @@ def main():
         print(f"Training samples: {len(train_X)}, Test samples: {len(test_X)}, Classes: {len(np.unique(train_y))}")
         print("-" * 100)
 
-        # Model 1: RFF=True, cache_size=256
-        print("Training: RFF=True, Cache=256...", end=" ", flush=True)
-        custom_model = KernelSVC(
+        # Exact RBF kernel (baseline)
+        print("Training: Exact RBF (no sampling), Cache=256...", end=" ", flush=True)
+        exact_model = KernelSVC(
+            C=1.0,
+            kernel="rbf",
+            gamma="scale",
+            max_iter=1000,
+            rff=False,
+            nystrom=False,
+            tol=1e-5,
+            cache_size=256,
+            multiclass="ovr",
+            D=200,
+        )
+        exact_acc, exact_time, exact_memory, exact_warnings = run_with_metrics(
+            exact_model, train_X, train_y, test_X, test_y, "Exact RBF"
+        )
+        print(f"Done (warnings: {exact_warnings})")
+
+        # RFF approximation
+        print("Training: RFF approximation, Cache=256...", end=" ", flush=True)
+        rff_model = KernelSVC(
             C=1.0,
             kernel="rbf",
             gamma="scale",
             max_iter=1000,
             rff=True,
+            nystrom=False,
             tol=1e-5,
             cache_size=256,
             multiclass="ovr",
             D=200,
         )
-        custom_acc, custom_time, custom_memory, custom_warnings = run_with_metrics(
-            custom_model, train_X, train_y, test_X, test_y, "RFF=True, Cache=256"
+        rff_acc, rff_time, rff_memory, rff_warnings = run_with_metrics(
+            rff_model, train_X, train_y, test_X, test_y, "RFF approximation"
         )
-        print(f"Done (warnings: {custom_warnings})")
+        print(f"Done (warnings: {rff_warnings})")
 
-        # Model 2: RFF=False, cache_size=256
-        print("Training: RFF=False, Cache=256...", end=" ", flush=True)
-        custom_model_with_cache = KernelSVC(
+        # Nyström approximation
+        print("Training: Nyström approximation, Cache=256...", end=" ", flush=True)
+        nystrom_model = KernelSVC(
             C=1.0,
             kernel="rbf",
             gamma="scale",
             max_iter=1000,
             rff=False,
+            nystrom=True,
             tol=1e-5,
             cache_size=256,
             multiclass="ovr",
             D=200,
         )
-        cache_acc, cache_time, cache_memory, cache_warnings = run_with_metrics(
-            custom_model_with_cache, train_X, train_y, test_X, test_y, "RFF=False, Cache=256"
+        nystrom_acc, nystrom_time, nystrom_memory, nystrom_warnings = run_with_metrics(
+            nystrom_model, train_X, train_y, test_X, test_y, "Nyström approximation"
         )
-        print(f"Done (warnings: {cache_warnings})")
-
-        # Shrinking comparison tests
-        print("\n" + "-" * 100)
-        print("Shrinking Effect Comparison:")
-        print("-" * 100)
-
-        # Model 5: shrinking=True, cache_size=256
-        print("Training: Shrinking=True, Cache=256...", end=" ", flush=True)
-        shrinking_cache_model = KernelSVC(
-            C=1.0,
-            kernel="rbf",
-            gamma="scale",
-            max_iter=1000,
-            rff=False,
-            tol=1e-5,
-            cache_size=256,
-            multiclass="ovr",
-            D=200,
-            shrinking=True,
-        )
-        shrinking_cache_acc, shrinking_cache_time, shrinking_cache_memory, shrinking_cache_warnings = run_with_metrics(
-            shrinking_cache_model, train_X, train_y, test_X, test_y, "Shrinking=True, Cache=256"
-        )
-        print(f"Done (warnings: {shrinking_cache_warnings})")
-
-        # Note: The earlier "RFF=False, Cache=256" run uses shrinking=False (default),
-        # so we reuse those results for the shrinking=False comparison.
+        print(f"Done (warnings: {nystrom_warnings})")
 
         # Print results in a formatted table
-        print("\nResults:")
+        print("\nResults (Exact vs RFF vs Nyström):")
         print(f"{'Model':<35s} | {'Accuracy':<10s} | {'Time (s)':<12s} | {'Memory (MB)':<15s} | {'Warnings':<10s}")
         print("-" * 100)
-        print(f"{'RFF=True, Cache=256':<35s} | {custom_acc:>10.4f} | {custom_time:>12.3f} | {custom_memory:>15.2f} | {custom_warnings:>10d}")
-        print(f"{'RFF=False, Cache=256':<35s} | {cache_acc:>10.4f} | {cache_time:>12.3f} | {cache_memory:>15.2f} | {cache_warnings:>10d}")
-        
-        print("\nShrinking Comparison:")
-        print(f"{'Model':<35s} | {'Accuracy':<10s} | {'Time (s)':<12s} | {'Memory (MB)':<15s} | {'Warnings':<10s}")
-        print("-" * 100)
-        print(f"{'Shrinking=True, Cache=256':<35s} | {shrinking_cache_acc:>10.4f} | {shrinking_cache_time:>12.3f} | {shrinking_cache_memory:>15.2f} | {shrinking_cache_warnings:>10d}")
-        print(f"{'Shrinking=False, Cache=256':<35s} | {cache_acc:>10.4f} | {cache_time:>12.3f} | {cache_memory:>15.2f} | {cache_warnings:>10d}")
-        
-        # Calculate speedup from shrinking
-        print("\nShrinking Speedup Analysis:")
-        print("-" * 100)
-        if cache_time > 0:
-            speedup_cache = cache_time / shrinking_cache_time if shrinking_cache_time > 0 else 0
-            print(f"With Cache=256: Shrinking speedup = {speedup_cache:.2f}x (Time: {cache_time:.3f}s -> {shrinking_cache_time:.3f}s)")
+        print(f"{'Exact RBF (no sampling)':<35s} | {exact_acc:>10.4f} | {exact_time:>12.3f} | {exact_memory:>15.2f} | {exact_warnings:>10d}")
+        print(f"{'RFF approximation':<35s} | {rff_acc:>10.4f} | {rff_time:>12.3f} | {rff_memory:>15.2f} | {rff_warnings:>10d}")
+        print(f"{'Nyström approximation':<35s} | {nystrom_acc:>10.4f} | {nystrom_time:>12.3f} | {nystrom_memory:>15.2f} | {nystrom_warnings:>10d}")
 
 
 if __name__ == "__main__":

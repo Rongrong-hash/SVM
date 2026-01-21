@@ -5,6 +5,7 @@ from sklearn.metrics import accuracy_score
 
 from sklearn.multiclass import OneVsOneClassifier, OneVsRestClassifier
 from ..rff import NormalRFF
+from ..Nyström import NystromRBF
 from ..solver import Solver, SolverWithCache
 
 class BiLinearSVC(BaseEstimator): #BaseEstimator是sklearn中的基类，用于实现自定义的分类器，使自定义模型能够无缝接入 sklearn 的生态系统
@@ -123,6 +124,7 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
                  coef0: float = 0., #适用范围是：'poly', 'sigmoid', 核函数公式中的常数,调节模型受高阶项影响的程度
                  max_iter: int = 1000,
                  rff: bool = False, #传统的核 SVM 计算复杂度随样本量 N 呈平方级增长（需要计算 N * N 的核矩阵）。RFF (Random Fourier Features) 通过随机采样的方法，将 RBF 核近似映射为显式的线性特征
+                 nystrom: bool = False, #Nyström 采样
                  D: int = 1000, #仅在 rff=True 时有效,指将原始特征映射到多少维的随机空间，D 越大，对 RBF 核的近似越精确
                  tol: float = 1e-5,
                  cache_size: int = 256,
@@ -133,7 +135,9 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
         self.degree = degree
         self.coef0 = coef0
         self.rff = rff
+        self.nystrom = nystrom
         self.D = D
+        self.transformer = None #用于存储 RFF 或 Nystrom 映射器
 
     def register_kernel(self, X, current_kernel): #注册核函数
         if type(self.gamma) == str:
@@ -157,7 +161,7 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
 
         current_kernel = self.kernel 
 
-        if self.rff:
+        if self.rff or self.nystrom:
             #计算gamma
             if type(self.gamma) == str:
                 gamma = {'scale': 1 / (self.n_features * X.std()), 
@@ -165,8 +169,12 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
             else:
                 gamma = self.gamma
 
-            #初始化并保存映射器，以便 predict 时使用
-            self.transformer = NormalRFF(gamma, self.D).fit(X)
+            if self.rff:
+                #初始化并保存映射器，以便 predict 时使用
+                self.transformer = NormalRFF(gamma, self.D).fit(X)
+            elif self.nystrom:
+                self.transformer = NystromRBF(gamma=gamma, n_components=self.D).fit(X)
+            
             #只在 fit 开始时转换一次 X, 转换后的 X 形状为 (l, D)
             X = self.transformer.transform(X)
             #之后的操作全部视为线性核
@@ -196,7 +204,7 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
             print("KernelSVC not converge with {} iterations".format(
                 self.max_iter))
 
-        if self.rff:
+        if self.rff or self.nystrom:
             self.decision_function = lambda x: (solver.alpha * y) @ (
                 X @ self.transformer.transform(x).T) - solver.calculate_rho() #solver.alpha * y: 对应 alpha_i * y_i
                                                                               #kernel_func(X, x): 对应 K(x_i, x)。计算训练集 X 中所有样本与新样本 x 的核相似度
@@ -221,6 +229,7 @@ class KernelSVC(LinearSVC, BiKernelSVC): #多分类核SVM
                  coef0: float = 0.,
                  max_iter: int = 1000,
                  rff: bool = False,
+                 nystrom: bool = False,
                  D: int = 1000,
                  tol: float = 1e-5,
                  cache_size: int = 256,
@@ -235,10 +244,11 @@ class KernelSVC(LinearSVC, BiKernelSVC): #多分类核SVM
         self.degree = degree
         self.coef0 = coef0
         self.rff = rff
+        self.nystrom = nystrom
         self.D = D
         params = {
             "estimator":
-            BiKernelSVC(C, kernel, degree, gamma, coef0, max_iter, rff, D, tol,
+            BiKernelSVC(C, kernel, degree, gamma, coef0, max_iter, rff, nystrom, D, tol,
                         cache_size, shrinking),
             "n_jobs":
             n_jobs,
