@@ -19,6 +19,7 @@ class BiLinearSVC(BaseEstimator): #BaseEstimator是sklearn中的基类，用于�
                                     #间隔内/误分 (αi​=C)  |yi​Ei​⩽0          |yi​Ei​>tol 
                 cache_size: int = 256, #SMO 算法中，每一次迭代都需要挑选两个 alpha 进行坐标上升优化，需要频繁用到 Q 矩阵，Q_{ij} = y_i y_j ({x}_i^t {x}_j)，如果使用缓存，算法会将计算过的点积结果存入内存，下次需要用到相同的i和j时，直接从内存读取
                 shrinking: bool = False,
+                secorder: bool = False,
                 ) -> None:
         super().__init__() #执行父类 BaseEstimator 的初始化逻辑
         self.C = C
@@ -26,6 +27,7 @@ class BiLinearSVC(BaseEstimator): #BaseEstimator是sklearn中的基类，用于�
         self.tol = tol
         self.cache_size = cache_size
         self.shrinking = shrinking
+        self.secorder = secorder
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         X, y = np.array(X), np.array(y, dtype=float) #创建参数X, y的类型为ndarray的副本
@@ -34,26 +36,27 @@ class BiLinearSVC(BaseEstimator): #BaseEstimator是sklearn中的基类，用于�
         p = -np.ones(l) #SVM 的对偶问题目标函数通常写作：min 1/2 * {alpha}^t * Q * {alpha} - sum(alpha_i), 这里的 sum(alpha_i) 可以改写为向量内积的形式：{e}^t * {alpha}，其中 {e} 是全 1 向量。在通用的二次规划（QP）求解器中，标准的目标函数形式通常是：min 1/2 * {x}^t * Q * {x} + {p}^t * {x}，故令 p = [-1，-1，..., -1]^t
 
         w = np.zeros(self.n_features) #权重 {w}
+        def func(i): #计算 Q 矩阵的第 i 列。在 SMO 算法中，当我们决定更新第 i 个拉格朗日乘子 alpha_i 时，我们需要知道该样本与所有其他样本之间的关系。这个函数就是在“按需”计算这些关系
+            return y * (X @ X[i]) * y[i] #np.matmul(X, X[i]): 这是计算特征矩阵 X（所有样本）与第 i 个样本 X[i] 的点积。结果是一个长度为 l 的向量，其中包含了 (x_0^t * x_i, x_1^t * x_i,…, x_{l-1}^t * x_i)
+                                                    #* y[i]:将上述所有点积结果乘以第 i 个样本的标签
+                                                    #y * ...:再乘以所有样本的标签向量 y。由于这里是元素对元素的乘法，它实际上完成了 y_j * y_i 的操作
+
         if self.cache_size == 0:
             Q = y.reshape(-1, 1) * y * (X @ X.T) #np.matmul(X, X.T)：计算特征矩阵 X 与其转置的乘积。结果是一个 l*l 的矩阵，其中第 (i, j) 个元素就是样本 x_i 和 x_j 的点积
                                                          #y.reshape(-1, 1) * y：把列向量 y 乘以行向量 y，生成一个 l*l 的符号矩阵。如果 y_i 和 y_j 同号，结果为 1，异号则为 -1，当两个数组的形状不匹配时，NumPy 会尝试自动扩展较小的数组以匹配较大数组的形状，从而进行逐元素（Element-wise）运算
                                                          #相乘结果：得到的 Q 矩阵存储了对偶问题所需的所有系数
                                                          #注意这里的 * 是广播机制，不是矩阵乘法
-            solver = Solver(Q, p, y, self.C, self.tol, self.shrinking)
+            solver = Solver(Q, p, y, self.C, self.tol, self.shrinking, self.secorder)
         else:
-            solver = SolverWithCache(p, y, self.C, self.tol, self.cache_size, self.shrinking) #按需计算：只有当 SMO 算法需要用到某个 Q_{ij} 时，才会去计算那两个向量的点积
+            solver = SolverWithCache(p, y, self.C, self.tol, self.cache_size, self.shrinking, self.secorder, func) #按需计算：只有当 SMO 算法需要用到某个 Q_{ij} 时，才会去计算那两个向量的点积
                                                                               #LRU 缓存：计算后的结果会存入缓存（大小由 cache_size 决定）。如果内存满了，就丢弃旧的，存入新的
-        def func(i): #计算 Q 矩阵的第 i 列。在 SMO 算法中，当我们决定更新第 i 个拉格朗日乘子 alpha_i 时，我们需要知道该样本与所有其他样本之间的关系。这个函数就是在“按需”计算这些关系
-            return y * (X @ X[i]) * y[i] #np.matmul(X, X[i]): 这是计算特征矩阵 X（所有样本）与第 i 个样本 X[i] 的点积。结果是一个长度为 l 的向量，其中包含了 (x_0^t * x_i, x_1^t * x_i,…, x_{l-1}^t * x_i)
-                                                    #* y[i]:将上述所有点积结果乘以第 i 个样本的标签
-                                                    #y * ...:再乘以所有样本的标签向量 y。由于这里是元素对元素的乘法，它实际上完成了 y_j * y_i 的操作
         
         for n_iter in range(self.max_iter): #SMO 算法的主循环
-            i, j = solver.select_and_run() #选择工作集，求解器会扫描所有样本，寻找最违反 KKT 条件（即最不符合分类规则）的两个样本索引 i 和 j
+            i, j, Qi = solver.select_and_run() #选择工作集，求解器会扫描所有样本，寻找最违反 KKT 条件（即最不符合分类规则）的两个样本索引 i 和 j
             if i < 0: #如果返回的 i < 0，说明所有样本都已经满足了 tol 设定的精度要求，或者已经没有优化的空间了，算法提前收敛，跳出循环
                 break
 
-            delta_i, delta_j = solver.update(i, j, func) #解析更新，利用之前定义的 func（计算 Q 矩阵列的函数）来获取必要的点积值，delta_i 和 delta_j 分别代表 alpha_i 和 alpha_j 的变化量（新值减去旧值）
+            delta_i, delta_j = solver.update(i, j, Qi, func) #解析更新，利用之前定义的 func（计算 Q 矩阵列的函数）来获取必要的点积值，delta_i 和 delta_j 分别代表 alpha_i 和 alpha_j 的变化量（新值减去旧值）
             w += delta_i * y[i] * X[i] + delta_j * y[j] * X[j] #由于 w = sum(alpha_k * y_k * x_k)，当 alpha_i 改变了 Delta(alpha_i) 时，w 的变化量就是 Delta(alpha_i * y_i * x_i)
         else:
             print("LinearSVC not converge with {} iterations".format(self.max_iter)) #如果循环是通过 break 正常退出（即模型收敛了），else 块不会执行；如果循环跑满了 max_iter 次还没有触碰到 break，则说明模型在规定步数内没有收敛，此时会触发 else 打印警告信息
@@ -84,13 +87,14 @@ class LinearSVC(BiLinearSVC): #多分类线性SVM，使用sklearn的multiclass�
                  tol: float = 1e-5,
                  cache_size: int = 256,
                  shrinking: bool = False,
+                 secorder: bool = False,
                  multiclass: str = "ovr", #One-vs-Rest 分类策略
                  n_jobs=None) -> None: #指定训练时使用的 CPU 核心数量
-        super().__init__(C, max_iter, tol, cache_size, shrinking)
+        super().__init__(C, max_iter, tol, cache_size, shrinking, secorder)
         self.multiclass = multiclass
         self.n_jobs = n_jobs
         params = {
-            "estimator": BiLinearSVC(C, max_iter, tol, cache_size, shrinking),
+            "estimator": BiLinearSVC(C, max_iter, tol, cache_size, shrinking, secorder),
             "n_jobs": n_jobs
         }
         self.multiclass_model: OneVsOneClassifier = {
@@ -128,8 +132,9 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
                  D: int = 1000, #仅在 rff=True 时有效,指将原始特征映射到多少维的随机空间，D 越大，对 RBF 核的近似越精确
                  tol: float = 1e-5,
                  cache_size: int = 256,
-                 shrinking: bool = False) -> None:
-        super().__init__(C, max_iter, tol, cache_size, shrinking)
+                 shrinking: bool = False,
+                 secorder: bool = False,) -> None:
+        super().__init__(C, max_iter, tol, cache_size, shrinking, secorder)
         self.kernel = kernel
         self.gamma = gamma
         self.degree = degree
@@ -185,21 +190,21 @@ class BiKernelSVC(BiLinearSVC): #二分类核SVM，该类被多分类KernelSVC�
 
         p = -np.ones(l)
 
-        if self.cache_size == 0:
-            Q = y.reshape(-1, 1) * y * kernel_func(X, X)
-            solver = Solver(Q, p, y, self.C, self.tol, self.shrinking)
-        else:
-            solver = SolverWithCache(p, y, self.C, self.tol, self.cache_size, self.shrinking)
-
         def func(i):
             #此时 X 已经是映射后的 Z 矩阵，kernel_func 是 np.matmul(x, y.T), 复杂度从 O(N*D) 降到了 O(N)
             return y * kernel_func(X, X[i:i+1]).flatten() * y[i] #X[i] 返回的是一个形状为 (d,) 的 向量。X[i:i+1] 返回的是一个形状为 (1, d) 的 矩阵（切片保留维度）。而 kernel_func（无论是 RFF 还是标准 RBF）通常期望输入是矩阵以便进行批量计算，所以用 X[i:i+1] 可以避免维度报错，确保输出是一个 (N, 1) 的矩阵
 
+        if self.cache_size == 0:
+            Q = y.reshape(-1, 1) * y * kernel_func(X, X)
+            solver = Solver(Q, p, y, self.C, self.tol, self.shrinking, self.secorder)
+        else:
+            solver = SolverWithCache(p, y, self.C, self.tol, self.cache_size, self.shrinking, self.secorder, func)
+
         for n_iter in range(self.max_iter):
-            i, j = solver.select_and_run()
+            i, j, Qi = solver.select_and_run()
             if i < 0:
                 break
-            solver.update(i, j, func)
+            solver.update(i, j, Qi, func)
         else:
             print("KernelSVC not converge with {} iterations".format(
                 self.max_iter))
@@ -234,9 +239,10 @@ class KernelSVC(LinearSVC, BiKernelSVC): #多分类核SVM
                  tol: float = 1e-5,
                  cache_size: int = 256,
                  shrinking: bool = False,
+                 secorder: bool = False,
                  multiclass: str = "ovr",
                  n_jobs: int = None) -> None:
-        super().__init__(C, max_iter, tol, cache_size, shrinking) #第一站：LinearSVC Python 首先根据 MRO 找到第一个父类 LinearSVC，并调用它的 __init__
+        super().__init__(C, max_iter, tol, cache_size, shrinking, secorder) #第一站：LinearSVC Python 首先根据 MRO 找到第一个父类 LinearSVC，并调用它的 __init__
                                                        #第二站：BiLinearSVC 如果 LinearSVC 的 __init__ 内部也写了 super().__init__(...)，它并不会跳到 object，而是会根据 MRO 找到下一个兄弟类，即 BiLinearSVC
                                                        #终点：object 最后，当所有父类都执行完，才会到达最顶层的 object
         self.kernel = kernel
@@ -249,7 +255,7 @@ class KernelSVC(LinearSVC, BiKernelSVC): #多分类核SVM
         params = {
             "estimator":
             BiKernelSVC(C, kernel, degree, gamma, coef0, max_iter, rff, nystrom, D, tol,
-                        cache_size, shrinking),
+                        cache_size, shrinking, secorder),
             "n_jobs":
             n_jobs,
         }

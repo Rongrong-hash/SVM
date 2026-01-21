@@ -46,6 +46,13 @@ DATASETS = [
     )),
 ]
 
+# Model variants to benchmark
+CONFIGS = [
+    ("Exact RBF (no sampling)", {"rff": False, "nystrom": False}),
+    ("RFF approximation", {"rff": True, "nystrom": False}),
+    ("Nyström approximation", {"rff": False, "nystrom": True}),
+]
+
 
 def get_dataset_size(loader):
     """Get the total number of samples in a dataset."""
@@ -141,70 +148,37 @@ def main():
         print(f"Training samples: {len(train_X)}, Test samples: {len(test_X)}, Classes: {len(np.unique(train_y))}")
         print("-" * 100)
 
-        # Exact RBF kernel (baseline)
-        print("Training: Exact RBF (no sampling), Cache=256...", end=" ", flush=True)
-        exact_model = KernelSVC(
-            C=1.0,
-            kernel="rbf",
-            gamma="scale",
-            max_iter=1000,
-            rff=False,
-            nystrom=False,
-            tol=1e-5,
-            cache_size=256,
-            multiclass="ovr",
-            D=200,
-        )
-        exact_acc, exact_time, exact_memory, exact_warnings = run_with_metrics(
-            exact_model, train_X, train_y, test_X, test_y, "Exact RBF"
-        )
-        print(f"Done (warnings: {exact_warnings})")
+        results = []
 
-        # RFF approximation
-        print("Training: RFF approximation, Cache=256...", end=" ", flush=True)
-        rff_model = KernelSVC(
-            C=1.0,
-            kernel="rbf",
-            gamma="scale",
-            max_iter=1000,
-            rff=True,
-            nystrom=False,
-            tol=1e-5,
-            cache_size=256,
-            multiclass="ovr",
-            D=200,
-        )
-        rff_acc, rff_time, rff_memory, rff_warnings = run_with_metrics(
-            rff_model, train_X, train_y, test_X, test_y, "RFF approximation"
-        )
-        print(f"Done (warnings: {rff_warnings})")
-
-        # Nyström approximation
-        print("Training: Nyström approximation, Cache=256...", end=" ", flush=True)
-        nystrom_model = KernelSVC(
-            C=1.0,
-            kernel="rbf",
-            gamma="scale",
-            max_iter=1000,
-            rff=False,
-            nystrom=True,
-            tol=1e-5,
-            cache_size=256,
-            multiclass="ovr",
-            D=200,
-        )
-        nystrom_acc, nystrom_time, nystrom_memory, nystrom_warnings = run_with_metrics(
-            nystrom_model, train_X, train_y, test_X, test_y, "Nyström approximation"
-        )
-        print(f"Done (warnings: {nystrom_warnings})")
+        for base_name, params in CONFIGS:
+            for secorder in (False, True):
+                secorder_label = "on" if secorder else "off"
+                display_name = f"{base_name} | secorder={secorder_label}"
+                print(f"Training: {display_name}, Cache=256...", end=" ", flush=True)
+                model = KernelSVC(
+                    C=1.0,
+                    kernel="rbf",
+                    gamma="scale",
+                    max_iter=1000,
+                    tol=1e-5,
+                    cache_size=256,
+                    multiclass="ovr",
+                    D=200,
+                    secorder=secorder,
+                    **params,
+                )
+                acc, total_time, total_memory, warnings = run_with_metrics(
+                    model, train_X, train_y, test_X, test_y, display_name
+                )
+                results.append((base_name, secorder_label, acc, total_time, total_memory, warnings))
+                print(f"Done (warnings: {warnings})")
 
         # Print results in a formatted table
-        print("\nResults (Exact vs RFF vs Nyström):")
-        print(f"{'Model':<35s} | {'Accuracy':<10s} | {'Time (s)':<12s} | {'Memory (MB)':<15s} | {'Warnings':<10s}")
-        print("-" * 100)
-        print(f"{'Exact RBF (no sampling)':<35s} | {exact_acc:>10.4f} | {exact_time:>12.3f} | {exact_memory:>15.2f} | {exact_warnings:>10d}")
-        print(f"{'RFF approximation':<35s} | {rff_acc:>10.4f} | {rff_time:>12.3f} | {rff_memory:>15.2f} | {rff_warnings:>10d}")
-        print(f"{'Nyström approximation':<35s} | {nystrom_acc:>10.4f} | {nystrom_time:>12.3f} | {nystrom_memory:>15.2f} | {nystrom_warnings:>10d}")
+        print("\nResults (secorder off vs on):")
+        print(f"{'Model':<35s} | {'secorder':<10s} | {'Accuracy':<10s} | {'Time (s)':<12s} | {'Memory (MB)':<15s} | {'Warnings':<10s}")
+        print("-" * 110)
+        for base_name, secorder_label, acc, total_time, total_memory, warnings in results:
+            print(f"{base_name:<35s} | {secorder_label:<10s} | {acc:>10.4f} | {total_time:>12.3f} | {total_memory:>15.2f} | {warnings:>10d}")
 
 
 if __name__ == "__main__":
